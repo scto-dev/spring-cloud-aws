@@ -1,0 +1,88 @@
+/*
+ * Copyright 2013-2021 the original author or authors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      https://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package io.awspring.cloud.autoconfigure.cloudmap;
+
+import io.awspring.cloud.autoconfigure.core.AwsClientBuilderConfigurer;
+import io.awspring.cloud.autoconfigure.core.AwsClientCustomizer;
+import io.awspring.cloud.cloudmap.discovery.CloudMapDiscoveryClient;
+import io.awspring.cloud.cloudmap.properties.registration.ServiceRegistration;
+import io.awspring.cloud.cloudmap.registration.CloudMapAutoRegistration;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import software.amazon.awssdk.services.ec2.Ec2Client;
+import software.amazon.awssdk.services.ec2.Ec2ClientBuilder;
+import software.amazon.awssdk.services.servicediscovery.ServiceDiscoveryClient;
+import software.amazon.awssdk.services.servicediscovery.ServiceDiscoveryClientBuilder;
+
+/**
+ * Cloudmap BootstrapConfiguration configuration class to create the required beans.
+ *
+ * @author Hari Ohm Prasath
+ * @since 3.0
+ */
+@Configuration(proxyBeanMethods = false)
+@EnableConfigurationProperties(CloudMapProperties.class)
+@ConditionalOnProperty(prefix = CloudMapProperties.CONFIG_PREFIX, name = "enabled", matchIfMissing = true)
+public class CloudMapAutoConfiguration {
+
+	private final CloudMapProperties properties;
+
+	public CloudMapAutoConfiguration(CloudMapProperties properties) {
+		this.properties = properties;
+	}
+
+	@ConditionalOnMissingBean
+	@Bean
+	public ServiceDiscoveryClient discoveryClient(AwsClientBuilderConfigurer awsClientBuilderConfigurer,
+			ObjectProvider<AwsClientCustomizer<ServiceDiscoveryClientBuilder>> configurer) {
+		return awsClientBuilderConfigurer
+				.configure(ServiceDiscoveryClient.builder(), this.properties, configurer.getIfAvailable()).build();
+	}
+
+	@ConditionalOnMissingBean
+	@Bean
+	public Ec2Client ec2Client(AwsClientBuilderConfigurer awsClientBuilderConfigurer,
+			ObjectProvider<AwsClientCustomizer<Ec2ClientBuilder>> configurer) {
+		return awsClientBuilderConfigurer.configure(Ec2Client.builder(), this.properties, configurer.getIfAvailable())
+				.build();
+	}
+
+	@Bean
+	@ConditionalOnMissingBean
+	CloudMapAutoRegistration createAutoRegistration(ApplicationEventPublisher eventPublisher,
+			ServiceDiscoveryClient serviceDiscovery, Ec2Client ec2Client) {
+		return new CloudMapAutoRegistration(eventPublisher, serviceDiscovery, ec2Client, properties.getRegistry(),
+				properties.getDeploymentPlatform());
+	}
+
+	@Bean
+	@ConditionalOnMissingBean
+	CloudMapDiscoveryClient createDiscoveryClient(ServiceDiscoveryClient serviceDiscovery) {
+		return new CloudMapDiscoveryClient(serviceDiscovery, properties.getDiscovery().getDiscoveryList());
+	}
+
+	@Bean
+	@ConditionalOnMissingBean
+	ServiceRegistration serviceRegistration(Ec2Client ec2Client) {
+		return new ServiceRegistration(properties.getRegistry(), ec2Client, properties.getDeploymentPlatform());
+	}
+
+}
