@@ -19,7 +19,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import io.awspring.cloud.autoconfigure.ConfiguredAwsClient;
 import io.awspring.cloud.autoconfigure.core.AwsAutoConfiguration;
-import io.awspring.cloud.autoconfigure.core.AwsClientCustomizer;
 import io.awspring.cloud.autoconfigure.core.CredentialsProviderAutoConfiguration;
 import io.awspring.cloud.autoconfigure.core.RegionProviderAutoConfiguration;
 import io.awspring.cloud.dynamodb.DefaultDynamoDbTableSchemaResolver;
@@ -27,7 +26,6 @@ import io.awspring.cloud.dynamodb.DynamoDbTableNameResolver;
 import io.awspring.cloud.dynamodb.DynamoDbTableSchemaResolver;
 import io.awspring.cloud.dynamodb.DynamoDbTemplate;
 import java.net.URI;
-import java.time.Duration;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
@@ -35,15 +33,10 @@ import org.springframework.boot.test.context.FilteredClassLoader;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.lang.Nullable;
-import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
 import software.amazon.awssdk.enhanced.dynamodb.DynamoDbEnhancedClient;
 import software.amazon.awssdk.enhanced.dynamodb.TableSchema;
 import software.amazon.awssdk.enhanced.dynamodb.mapper.StaticTableSchema;
-import software.amazon.awssdk.http.SdkHttpClient;
-import software.amazon.awssdk.http.apache.ApacheHttpClient;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
-import software.amazon.awssdk.services.dynamodb.DynamoDbClientBuilder;
 import software.amazon.dax.ClusterDaxClient;
 
 /**
@@ -119,17 +112,6 @@ class DynamoDbAutoConfigurationTest {
 		}
 
 		@Test
-		void customDynamoDbClientConfigurer() {
-			contextRunner.withUserConfiguration(DynamoDbAutoConfigurationTest.CustomAwsClientConfig.class)
-					.run(context -> {
-						ConfiguredAwsClient dynamoDbClient = new ConfiguredAwsClient(
-								context.getBean(DynamoDbClient.class));
-						assertThat(dynamoDbClient.getApiCallTimeout()).isEqualTo(Duration.ofMillis(1999));
-						assertThat(dynamoDbClient.getSyncHttpClient()).isNotNull();
-					});
-		}
-
-		@Test
 		void tableSchemaBeansRegistered() {
 			contextRunner.withUserConfiguration(DynamoDbAutoConfigurationTest.TableSchemaConfiguration.class)
 					.run(context -> {
@@ -190,11 +172,11 @@ class DynamoDbAutoConfigurationTest {
 						assertThat(daxClient.getWriteRetries()).isEqualTo(2);
 						assertThat(daxClient.getReadRetries()).isEqualTo(2);
 						assertThat(daxClient.getIdleTimeoutMillis()).isEqualTo(30000);
-						assertThat(daxClient.getRequestTimeoutMillis()).isEqualTo(1000);
+						assertThat(daxClient.getRequestTimeoutMillis()).isEqualTo(60000);
 						assertThat(daxClient.getConnectionTtlMillis()).isEqualTo(0);
 						assertThat(daxClient.getClusterUpdateIntervalMillis()).isEqualTo(4000);
 						assertThat(daxClient.getEndpointRefreshTimeoutMillis()).isEqualTo(6000);
-						assertThat(daxClient.getMaxConcurrency()).isEqualTo(1000);
+						assertThat(daxClient.getMaxConcurrency()).isEqualTo(100);
 						assertThat(daxClient.getMaxPendingConnectionAcquires()).isEqualTo(10000);
 						assertThat(daxClient.getSkipHostNameVerification()).isFalse();
 						assertThat(daxClient.getConnectTimeoutMillis()).isEqualTo(1000);
@@ -286,30 +268,6 @@ class DynamoDbAutoConfigurationTest {
 		public String resolve(Class clazz) {
 			return null;
 		}
-	}
-
-	@Configuration(proxyBeanMethods = false)
-	static class CustomAwsClientConfig {
-
-		@Bean
-		AwsClientCustomizer<DynamoDbClientBuilder> dynamoDbClientBuilderAwsClientConfigurer() {
-			return new DynamoDbAutoConfigurationTest.CustomAwsClientConfig.DynamoDbClientCustomizer();
-		}
-
-		static class DynamoDbClientCustomizer implements AwsClientCustomizer<DynamoDbClientBuilder> {
-			@Override
-			@Nullable
-			public ClientOverrideConfiguration overrideConfiguration() {
-				return ClientOverrideConfiguration.builder().apiCallTimeout(Duration.ofMillis(1999)).build();
-			}
-
-			@Override
-			@Nullable
-			public SdkHttpClient httpClient() {
-				return ApacheHttpClient.builder().connectionTimeout(Duration.ofMillis(1542)).build();
-			}
-		}
-
 	}
 
 	@Configuration(proxyBeanMethods = false)
