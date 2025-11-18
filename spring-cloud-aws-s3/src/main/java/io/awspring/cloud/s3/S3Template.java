@@ -117,6 +117,11 @@ public class S3Template implements S3Operations {
 	}
 
 	@Override
+	public List<S3Resource> listAllObjects(String bucketName) {
+		return listObjects(bucketName, "");
+	}
+
+	@Override
 	public List<S3Resource> listObjects(String bucketName, String prefix) {
 		Assert.notNull(bucketName, "bucketName is required");
 		Assert.notNull(prefix, "prefix is required");
@@ -137,6 +142,11 @@ public class S3Template implements S3Operations {
 		PutObjectRequest.Builder requestBuilder = PutObjectRequest.builder().bucket(bucketName).key(key)
 				.contentType(s3ObjectConverter.contentType());
 		s3Client.putObject(requestBuilder.build(), s3ObjectConverter.write(object));
+		return new S3Resource(bucketName, key, s3Client, s3OutputStreamProvider);
+	}
+
+	@Override
+	public S3Resource createResource(String bucketName, String key) {
 		return new S3Resource(bucketName, key, s3Client, s3OutputStreamProvider);
 	}
 

@@ -22,6 +22,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 import static org.testcontainers.shaded.org.awaitility.Awaitility.await;
 
+import io.awspring.cloud.autoconfigure.AwsSyncClientCustomizer;
 import io.awspring.cloud.autoconfigure.ConfiguredAwsClient;
 import java.io.File;
 import java.io.IOException;
@@ -52,8 +53,6 @@ import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.core.SdkBytes;
-import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
-import software.amazon.awssdk.http.SdkHttpClient;
 import software.amazon.awssdk.http.apache.ApacheHttpClient;
 import software.amazon.awssdk.services.secretsmanager.SecretsManagerClient;
 import software.amazon.awssdk.services.secretsmanager.model.GetSecretValueRequest;
@@ -74,7 +73,7 @@ class SecretsManagerConfigDataLoaderIntegrationTests {
 
 	@Container
 	static LocalStackContainer localstack = new LocalStackContainer(
-			DockerImageName.parse("localstack/localstack:3.2.0"));
+			DockerImageName.parse("localstack/localstack:4.4.0"));
 
 	@TempDir
 	static Path tokenTempDir;
@@ -180,16 +179,16 @@ class SecretsManagerConfigDataLoaderIntegrationTests {
 	}
 
 	@Test
-	void clientIsConfiguredWithConfigurerProvidedToBootstrapRegistry() {
+	void clientIsConfiguredWithCustomizerProvidedToBootstrapRegistry() {
 		SpringApplication application = new SpringApplication(App.class);
 		application.setWebApplicationType(WebApplicationType.NONE);
-		application.addBootstrapRegistryInitializer(new AwsConfigurerClientConfiguration());
+		application.addBootstrapRegistryInitializer(new CustomizerConfiguration());
 
 		try (ConfigurableApplicationContext context = runApplication(application,
 				"aws-secretsmanager:/config/spring;/config/second")) {
-			ConfiguredAwsClient ssmClient = new ConfiguredAwsClient(context.getBean(SecretsManagerClient.class));
-			assertThat(ssmClient.getApiCallTimeout()).isEqualTo(Duration.ofMillis(2828));
-			assertThat(ssmClient.getSyncHttpClient()).isNotNull();
+			ConfiguredAwsClient client = new ConfiguredAwsClient(context.getBean(SecretsManagerClient.class));
+			assertThat(client.getApiCallTimeout()).isEqualTo(Duration.ofMillis(2001));
+			assertThat(client.getSyncHttpClient()).isNotNull();
 		}
 	}
 
@@ -480,24 +479,18 @@ class SecretsManagerConfigDataLoaderIntegrationTests {
 	static class App {
 	}
 
-	static class AwsConfigurerClientConfiguration implements BootstrapRegistryInitializer {
+	static class CustomizerConfiguration implements BootstrapRegistryInitializer {
 
 		@Override
 		public void initialize(BootstrapRegistry registry) {
-			registry.register(AwsSecretsManagerClientCustomizer.class,
-					context -> new AwsSecretsManagerClientCustomizer() {
-
-						@Override
-						public ClientOverrideConfiguration overrideConfiguration() {
-							return ClientOverrideConfiguration.builder().apiCallTimeout(Duration.ofMillis(2828))
-									.build();
-						}
-
-						@Override
-						public SdkHttpClient httpClient() {
-							return ApacheHttpClient.builder().connectionTimeout(Duration.ofMillis(1542)).build();
-						}
-					});
+			registry.register(SecretsManagerClientCustomizer.class, context -> (builder -> {
+				builder.overrideConfiguration(builder.overrideConfiguration().copy(c -> {
+					c.apiCallTimeout(Duration.ofMillis(2001));
+				}));
+			}));
+			registry.register(AwsSyncClientCustomizer.class, context -> (builder -> {
+				builder.httpClient(ApacheHttpClient.builder().connectionTimeout(Duration.ofMillis(1542)).build());
+			}));
 		}
 	}
 

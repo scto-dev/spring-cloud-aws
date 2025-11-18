@@ -22,6 +22,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 import static org.testcontainers.shaded.org.awaitility.Awaitility.await;
 
+import io.awspring.cloud.autoconfigure.AwsSyncClientCustomizer;
 import io.awspring.cloud.autoconfigure.ConfiguredAwsClient;
 import java.io.IOException;
 import java.time.Duration;
@@ -46,8 +47,6 @@ import org.testcontainers.utility.DockerImageName;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
-import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
-import software.amazon.awssdk.http.SdkHttpClient;
 import software.amazon.awssdk.http.apache.ApacheHttpClient;
 import software.amazon.awssdk.services.ssm.SsmClient;
 import software.amazon.awssdk.services.ssm.model.GetParametersByPathRequest;
@@ -70,7 +69,7 @@ class ParameterStoreConfigDataLoaderIntegrationTests {
 
 	@Container
 	static LocalStackContainer localstack = new LocalStackContainer(
-			DockerImageName.parse("localstack/localstack:3.2.0"));
+			DockerImageName.parse("localstack/localstack:4.4.0"));
 
 	@BeforeAll
 	static void beforeAll() {
@@ -125,15 +124,15 @@ class ParameterStoreConfigDataLoaderIntegrationTests {
 	}
 
 	@Test
-	void clientIsConfiguredWithConfigurerProvidedToBootstrapRegistry() {
+	void clientIsConfiguredWithCustomizerProvidedToBootstrapRegistry() {
 		SpringApplication application = new SpringApplication(App.class);
 		application.setWebApplicationType(WebApplicationType.NONE);
-		application.addBootstrapRegistryInitializer(new AwsConfigurerClientConfiguration());
+		application.addBootstrapRegistryInitializer(new CustomizerConfiguration());
 
 		try (ConfigurableApplicationContext context = runApplication(application,
 				"aws-parameterstore:/config/spring/")) {
 			ConfiguredAwsClient ssmClient = new ConfiguredAwsClient(context.getBean(SsmClient.class));
-			assertThat(ssmClient.getApiCallTimeout()).isEqualTo(Duration.ofMillis(2828));
+			assertThat(ssmClient.getApiCallTimeout()).isEqualTo(Duration.ofMillis(2001));
 			assertThat(ssmClient.getSyncHttpClient()).isNotNull();
 		}
 	}
@@ -430,24 +429,18 @@ class ParameterStoreConfigDataLoaderIntegrationTests {
 
 	}
 
-	static class AwsConfigurerClientConfiguration implements BootstrapRegistryInitializer {
+	static class CustomizerConfiguration implements BootstrapRegistryInitializer {
 
 		@Override
 		public void initialize(BootstrapRegistry registry) {
-			registry.register(AwsParameterStoreClientCustomizer.class,
-					context -> new AwsParameterStoreClientCustomizer() {
-
-						@Override
-						public ClientOverrideConfiguration overrideConfiguration() {
-							return ClientOverrideConfiguration.builder().apiCallTimeout(Duration.ofMillis(2828))
-									.build();
-						}
-
-						@Override
-						public SdkHttpClient httpClient() {
-							return ApacheHttpClient.builder().connectionTimeout(Duration.ofMillis(1542)).build();
-						}
-					});
+			registry.register(SsmClientCustomizer.class, context -> (builder -> {
+				builder.overrideConfiguration(builder.overrideConfiguration().copy(c -> {
+					c.apiCallTimeout(Duration.ofMillis(2001));
+				}));
+			}));
+			registry.register(AwsSyncClientCustomizer.class, context -> (builder -> {
+				builder.httpClient(ApacheHttpClient.builder().connectionTimeout(Duration.ofMillis(1542)).build());
+			}));
 		}
 	}
 

@@ -16,6 +16,7 @@
 package io.awspring.cloud.sqs.config;
 
 import io.awspring.cloud.sqs.listener.AsyncMessageListener;
+import io.awspring.cloud.sqs.listener.BatchVisibility;
 import io.awspring.cloud.sqs.listener.ListenerMode;
 import io.awspring.cloud.sqs.listener.MessageListener;
 import io.awspring.cloud.sqs.listener.MessageListenerContainer;
@@ -29,6 +30,7 @@ import java.util.concurrent.CompletionStage;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
+import java.util.stream.Stream;
 import org.springframework.core.BridgeMethodResolver;
 import org.springframework.core.MethodParameter;
 import org.springframework.lang.Nullable;
@@ -40,6 +42,7 @@ import org.springframework.util.Assert;
  * Base class for implementing a {@link HandlerMethodEndpoint}.
  *
  * @author Tomaz Fernandes
+ * @author José Iêdo
  * @since 3.0
  */
 public abstract class AbstractEndpoint implements HandlerMethodEndpoint {
@@ -89,6 +92,14 @@ public abstract class AbstractEndpoint implements HandlerMethodEndpoint {
 	}
 
 	/**
+	 * Get the bean instance to be used when handling a message for this endpoint.
+	 * @return the bean instance.
+	 */
+	public Object getBean() {
+		return this.bean;
+	}
+
+	/**
 	 * Set the method to be used when handling a message for this endpoint.
 	 * @param method the method.
 	 */
@@ -107,33 +118,47 @@ public abstract class AbstractEndpoint implements HandlerMethodEndpoint {
 		this.handlerMethodFactory = handlerMethodFactory;
 	}
 
+	/**
+	 * Get the {@link MessageHandlerMethodFactory} to be used for handling messages in this endpoint.
+	 * @return the factory.
+	 */
+	@Nullable
+	public MessageHandlerMethodFactory getMessageHandlerMethodFactory() {
+		return this.handlerMethodFactory;
+	}
+
 	@Override
 	public void configureListenerMode(Consumer<ListenerMode> consumer) {
 		List<MethodParameter> parameters = getMethodParameters();
 		boolean batch = hasParameterOfType(parameters, List.class);
 		boolean batchAckParameter = hasParameterOfType(parameters, BatchAcknowledgement.class);
-		Assert.isTrue(hasValidParameters(batch, batchAckParameter, parameters.size()), getInvalidParametersMessage());
+		boolean batchVisibilityParameter = hasParameterOfType(parameters, BatchVisibility.class);
+		Assert.isTrue(hasValidParameters(batch, batchAckParameter, batchVisibilityParameter, parameters.size()),
+				getInvalidParametersMessage());
 		consumer.accept(batch ? ListenerMode.BATCH : ListenerMode.SINGLE_MESSAGE);
 	}
 
-	private boolean hasValidParameters(boolean batch, boolean batchAckParameter, int size) {
-		return hasValidSingleMessageParameters(batch, batchAckParameter)
-				|| hasValidBatchParameters(batchAckParameter, size);
+	private boolean hasValidParameters(boolean batch, boolean batchAckParameter, boolean batchVisibilityParameter,
+			int size) {
+		return hasValidSingleMessageParameters(batch, batchAckParameter, batchVisibilityParameter)
+				|| hasValidBatchParameters(batchAckParameter, batchVisibilityParameter, size);
 	}
 
-	private boolean hasValidSingleMessageParameters(boolean batch, boolean batchAckParameter) {
-		return !batch && !batchAckParameter;
+	private boolean hasValidSingleMessageParameters(boolean batch, boolean batchAckParameter,
+			boolean batchVisibilityParameter) {
+		return !batch && !batchAckParameter && !batchVisibilityParameter;
 	}
 
-	private boolean hasValidBatchParameters(boolean batchAckParameter, int size) {
-		return size == 1 || (size == 2 && batchAckParameter);
+	private boolean hasValidBatchParameters(boolean batchAckParameter, boolean batchVisibilityParameter, int size) {
+		long expectedAdditionalParams = Stream.of(batchAckParameter, batchVisibilityParameter).filter(b -> b).count();
+		return size == expectedAdditionalParams + 1;
 	}
 
 	private String getInvalidParametersMessage() {
 		return String.format(
 				"Method %s from class %s in endpoint %s has invalid parameters for batch processing. "
 						+ "Batch methods must have a single List parameter, either of Message<T> or T types,"
-						+ "and optionally a BatchAcknowledgement or AsyncAcknowledgement parameter.",
+						+ "and optionally BatchAcknowledgement and BatchVisibility parameters.",
 				this.method.getName(), this.method.getDeclaringClass(), this.id);
 	}
 

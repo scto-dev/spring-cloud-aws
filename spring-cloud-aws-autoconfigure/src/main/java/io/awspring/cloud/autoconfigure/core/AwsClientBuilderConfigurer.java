@@ -15,14 +15,20 @@
  */
 package io.awspring.cloud.autoconfigure.core;
 
+import io.awspring.cloud.autoconfigure.AwsAsyncClientCustomizer;
+import io.awspring.cloud.autoconfigure.AwsClientCustomizer;
 import io.awspring.cloud.autoconfigure.AwsClientProperties;
+import io.awspring.cloud.autoconfigure.AwsSyncClientCustomizer;
 import io.awspring.cloud.core.SpringCloudClientConfiguration;
 import java.util.Optional;
+import java.util.stream.Stream;
 import org.springframework.lang.Nullable;
 import org.springframework.util.Assert;
 import org.springframework.util.StringUtils;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
+import software.amazon.awssdk.awscore.client.builder.AwsAsyncClientBuilder;
 import software.amazon.awssdk.awscore.client.builder.AwsClientBuilder;
+import software.amazon.awssdk.awscore.client.builder.AwsSyncClientBuilder;
 import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.regions.providers.AwsRegionProvider;
@@ -47,17 +53,12 @@ public class AwsClientBuilderConfigurer {
 		this.clientOverrideConfiguration = new SpringCloudClientConfiguration().clientOverrideConfiguration();
 	}
 
-	public <T extends AwsClientBuilder<?, ?>> T configure(T builder) {
-		return configure(builder, null, null, null);
+	public <T extends AwsClientBuilder<T, ?>> T configure(T builder) {
+		return configure(builder, null, null);
 	}
 
-	public <T extends AwsClientBuilder<?, ?>> T configure(T builder, @Nullable AwsClientProperties clientProperties,
-			@Nullable AwsClientCustomizer<T> customizer) {
-		return configure(builder, clientProperties, null, customizer);
-	}
-
-	public <T extends AwsClientBuilder<?, ?>> T configure(T builder, @Nullable AwsClientProperties clientProperties,
-			@Nullable AwsConnectionDetails connectionDetails, @Nullable AwsClientCustomizer<T> customizer) {
+	public <T extends AwsClientBuilder<T, ?>> T configure(T builder, @Nullable AwsClientProperties clientProperties,
+			@Nullable AwsConnectionDetails connectionDetails) {
 		Assert.notNull(builder, "builder is required");
 
 		builder.credentialsProvider(this.credentialsProvider).region(resolveRegion(clientProperties, connectionDetails))
@@ -71,10 +72,38 @@ public class AwsClientBuilderConfigurer {
 		Optional.ofNullable(this.awsProperties.getDefaultsMode()).ifPresent(builder::defaultsMode);
 		Optional.ofNullable(this.awsProperties.getFipsEnabled()).ifPresent(builder::fipsEnabled);
 		Optional.ofNullable(this.awsProperties.getDualstackEnabled()).ifPresent(builder::dualstackEnabled);
-		if (customizer != null) {
-			AwsClientCustomizer.apply(customizer, builder);
-		}
+		Optional.ofNullable(clientProperties).flatMap(it -> Optional.ofNullable(clientProperties.getDualstackEnabled()))
+				.ifPresent(builder::dualstackEnabled);
+
 		return builder;
+	}
+
+	public <T extends AwsClientBuilder<T, ?>> T configureSyncClient(T builder,
+			@Nullable AwsClientProperties clientProperties, @Nullable AwsConnectionDetails connectionDetails,
+			@Nullable Stream<? extends AwsClientCustomizer<T>> clientBuilderCustomizer,
+			@Nullable Stream<? extends AwsSyncClientCustomizer> commonBuilderCustomizer) {
+		T result = configure(builder, clientProperties, connectionDetails);
+		if (commonBuilderCustomizer != null && builder instanceof AwsSyncClientBuilder<?, ?>) {
+			commonBuilderCustomizer.forEach(it -> it.customize((AwsSyncClientBuilder<?, ?>) result));
+		}
+		if (clientBuilderCustomizer != null) {
+			clientBuilderCustomizer.forEach(it -> it.customize(result));
+		}
+		return result;
+	}
+
+	public <T extends AwsClientBuilder<T, ?>> T configureAsyncClient(T builder,
+			@Nullable AwsClientProperties clientProperties, @Nullable AwsConnectionDetails connectionDetails,
+			@Nullable Stream<? extends AwsClientCustomizer<T>> clientBuilderCustomizer,
+			@Nullable Stream<? extends AwsAsyncClientCustomizer> commonBuilderCustomizer) {
+		T result = configure(builder, clientProperties, connectionDetails);
+		if (commonBuilderCustomizer != null && builder instanceof AwsAsyncClientBuilder<?, ?>) {
+			commonBuilderCustomizer.forEach(it -> it.customize((AwsAsyncClientBuilder<?, ?>) result));
+		}
+		if (clientBuilderCustomizer != null) {
+			clientBuilderCustomizer.forEach(it -> it.customize(result));
+		}
+		return result;
 	}
 
 	public Region resolveRegion(@Nullable AwsClientProperties clientProperties,

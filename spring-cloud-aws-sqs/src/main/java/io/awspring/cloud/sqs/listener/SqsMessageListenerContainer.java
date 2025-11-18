@@ -25,6 +25,7 @@ import io.awspring.cloud.sqs.listener.interceptor.AsyncMessageInterceptor;
 import io.awspring.cloud.sqs.listener.interceptor.MessageInterceptor;
 import io.awspring.cloud.sqs.listener.sink.MessageSink;
 import io.awspring.cloud.sqs.listener.source.MessageSource;
+import io.awspring.cloud.sqs.support.observation.SqsListenerObservation;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -108,6 +109,8 @@ public class SqsMessageListenerContainer<T>
 
 	private static final Logger logger = LoggerFactory.getLogger(SqsMessageListenerContainer.class);
 
+	private static final SqsListenerObservation.SqsSpecifics OBSERVATION_SPECIFIC_INSTANCES = new SqsListenerObservation.SqsSpecifics();
+
 	private final SqsAsyncClient sqsAsyncClient;
 
 	public SqsMessageListenerContainer(SqsAsyncClient sqsAsyncClient, SqsContainerOptions options) {
@@ -128,8 +131,8 @@ public class SqsMessageListenerContainer<T>
 	@Override
 	public void setQueueNames(Collection<String> queueNames) {
 		Assert.isTrue(
-			queueNames.stream().allMatch(this::isFifoQueue) || queueNames.stream().noneMatch(this::isFifoQueue),
-			"SqsMessageListenerContainer must contain either all FIFO or all Standard queues.");
+				queueNames.stream().allMatch(this::isFifoQueue) || queueNames.stream().noneMatch(this::isFifoQueue),
+				"SqsMessageListenerContainer must contain either all FIFO or all Standard queues.");
 		super.setQueueNames(queueNames);
 	}
 
@@ -141,6 +144,11 @@ public class SqsMessageListenerContainer<T>
 	protected void doConfigureMessageSources(Collection<MessageSource<T>> messageSources) {
 		ConfigUtils.INSTANCE.acceptManyIfInstance(messageSources, SqsAsyncClientAware.class,
 				asca -> asca.setSqsAsyncClient(this.sqsAsyncClient));
+	}
+
+	@Override
+	protected SqsListenerObservation.SqsSpecifics createMessagingObservationSpecifics() {
+		return OBSERVATION_SPECIFIC_INSTANCES;
 	}
 
 	@Override

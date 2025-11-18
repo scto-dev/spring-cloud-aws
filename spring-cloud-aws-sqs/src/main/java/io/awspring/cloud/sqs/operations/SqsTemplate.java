@@ -1,5 +1,5 @@
 /*
- * Copyright 2013-2023 the original author or authors.
+ * Copyright 2013-2025 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -29,6 +29,7 @@ import io.awspring.cloud.sqs.support.converter.MessageConversionContext;
 import io.awspring.cloud.sqs.support.converter.MessagingMessageConverter;
 import io.awspring.cloud.sqs.support.converter.SqsMessageConversionContext;
 import io.awspring.cloud.sqs.support.converter.SqsMessagingMessageConverter;
+import io.awspring.cloud.sqs.support.observation.SqsTemplateObservation;
 import java.time.Duration;
 import java.util.Collection;
 import java.util.Collections;
@@ -72,12 +73,15 @@ import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
  *
  * @author Tomaz Fernandes
  * @author Zhong Xi Lu
+ * @author Hyunggeol Lee
  *
  * @since 3.0
  */
 public class SqsTemplate extends AbstractMessagingTemplate<Message> implements SqsOperations, SqsAsyncOperations {
 
 	private static final Logger logger = LoggerFactory.getLogger(SqsTemplate.class);
+
+	private static final SqsTemplateObservation.SqsSpecifics SQS_OBSERVATION_SPECIFICS = new SqsTemplateObservation.SqsSpecifics();
 
 	private final Map<String, CompletableFuture<QueueAttributes>> queueAttributesCache = new ConcurrentHashMap<>();
 
@@ -96,7 +100,7 @@ public class SqsTemplate extends AbstractMessagingTemplate<Message> implements S
 	private final TemplateContentBasedDeduplication contentBasedDeduplication;
 
 	private SqsTemplate(SqsTemplateBuilderImpl builder) {
-		super(builder.messageConverter, builder.options);
+		super(builder.messageConverter, builder.options, SQS_OBSERVATION_SPECIFICS);
 		SqsTemplateOptionsImpl options = builder.options;
 		this.sqsAsyncClient = builder.sqsAsyncClient;
 		this.messageAttributeNames = options.messageAttributeNames;
@@ -454,9 +458,11 @@ public class SqsTemplate extends AbstractMessagingTemplate<Message> implements S
 	private Map<MessageSystemAttributeNameForSends, MessageSystemAttributeValue> mapMessageSystemAttributes(
 			Message message) {
 		return message.attributes().entrySet().stream().filter(Predicate.not(entry -> isSkipAttribute(entry.getKey())))
-				.collect(Collectors.toMap(entry -> MessageSystemAttributeNameForSends.fromValue(entry.getKey().name()),
-						entry -> MessageSystemAttributeValue.builder().dataType(MessageAttributeDataTypes.STRING)
-								.stringValue(entry.getValue()).build()));
+				.collect(Collectors
+						.toMap(entry -> MessageSystemAttributeNameForSends.fromValue(entry.getKey().toString()),
+								entry -> MessageSystemAttributeValue.builder()
+										.dataType(MessageAttributeDataTypes.STRING).stringValue(entry.getValue())
+										.build()));
 	}
 
 	private boolean isSkipAttribute(MessageSystemAttributeName name) {
@@ -465,8 +471,18 @@ public class SqsTemplate extends AbstractMessagingTemplate<Message> implements S
 	}
 
 	private CompletableFuture<QueueAttributes> getQueueAttributes(String endpointName) {
-		return this.queueAttributesCache.computeIfAbsent(endpointName,
-				newName -> doGetQueueAttributes(endpointName, newName));
+		CompletableFuture<QueueAttributes> future = this.queueAttributesCache.computeIfAbsent(endpointName,
+			newName -> doGetQueueAttributes(endpointName, newName));
+
+		// Remove failed futures from cache
+		future.whenComplete((result, throwable) -> {
+			if (throwable != null) {
+				this.queueAttributesCache.remove(endpointName);
+				logger.debug("Removed failed queue attributes from cache for: {}", endpointName);
+			}
+		});
+
+		return future;
 	}
 
 	private CompletableFuture<QueueAttributes> doGetQueueAttributes(String endpointName, String newName) {
@@ -602,11 +618,11 @@ public class SqsTemplate extends AbstractMessagingTemplate<Message> implements S
 		ReceiveMessageRequest.Builder builder = ReceiveMessageRequest.builder().queueUrl(attributes.getQueueUrl())
 				.maxNumberOfMessages(maxNumberOfMessages).messageAttributeNames(this.messageAttributeNames)
 				.attributeNamesWithStrings(this.messageSystemAttributeNames)
-				.waitTimeSeconds(pollTimeout.toSecondsPart());
+				.waitTimeSeconds(toInt(pollTimeout.toSeconds()));
 		if (additionalHeaders.containsKey(SqsHeaders.SQS_VISIBILITY_TIMEOUT_HEADER)) {
 			builder.visibilityTimeout(
-					getValueAs(additionalHeaders, SqsHeaders.SQS_VISIBILITY_TIMEOUT_HEADER, Duration.class)
-							.toSecondsPart());
+					toInt(getValueAs(additionalHeaders, SqsHeaders.SQS_VISIBILITY_TIMEOUT_HEADER, Duration.class)
+							.toSeconds()));
 		}
 		if (additionalHeaders.containsKey(SqsHeaders.SQS_RECEIVE_REQUEST_ATTEMPT_ID_HEADER)) {
 			builder.receiveRequestAttemptId(
@@ -614,6 +630,15 @@ public class SqsTemplate extends AbstractMessagingTemplate<Message> implements S
 							.toString());
 		}
 		return builder.build();
+	}
+
+	// Convert a long value to an int. Values larger than Integer.MAX_VALUE are set to Integer.MAX_VALUE
+	private int toInt(long longValue) {
+		if (longValue > Integer.MAX_VALUE) {
+			return Integer.MAX_VALUE;
+		}
+
+		return (int) longValue;
 	}
 
 	private <V> V getValueAs(Map<String, Object> headers, String headerName, Class<V> valueClass) {
@@ -675,6 +700,13 @@ public class SqsTemplate extends AbstractMessagingTemplate<Message> implements S
 		public SqsTemplateOptions contentBasedDeduplication(
 				TemplateContentBasedDeduplication contentBasedDeduplication) {
 			this.contentBasedDeduplication = contentBasedDeduplication;
+			return this;
+		}
+
+		@Override
+		public SqsTemplateOptions observationConvention(SqsTemplateObservation.Convention observationConvention) {
+			Assert.notNull(observationConvention, "observationConvention cannot be null");
+			super.observationConvention(observationConvention);
 			return this;
 		}
 

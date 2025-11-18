@@ -25,8 +25,11 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.Duration;
+import java.util.Base64;
 import java.util.List;
+import net.bytebuddy.utility.RandomString;
 import org.apache.http.HttpEntity;
 import org.apache.http.HttpResponse;
 import org.apache.http.client.methods.HttpGet;
@@ -39,14 +42,9 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.util.StreamUtils;
-import org.testcontainers.containers.localstack.LocalStackContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.DockerImageName;
-import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
-import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.core.ResponseInputStream;
 import software.amazon.awssdk.core.sync.RequestBody;
+import software.amazon.awssdk.http.HttpStatusCode;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.GetObjectResponse;
@@ -62,31 +60,25 @@ import software.amazon.awssdk.services.s3.presigner.S3Presigner;
  * @author Maciej Walkowiak
  * @author Yuki Yoshida
  * @author Ziemowit Stolarczyk
+ * @author Hardik Singh Behl
+ * @author Artem Bilan
  */
-@Testcontainers
-class S3TemplateIntegrationTests {
+class S3TemplateIntegrationTests implements LocalstackContainerTest {
 
 	private static final String BUCKET_NAME = "test-bucket";
-
-	@Container
-	static LocalStackContainer localstack = new LocalStackContainer(
-			DockerImageName.parse("localstack/localstack:3.2.0"));
 
 	private static S3Client client;
 
 	private static S3Presigner presigner;
+
 	private S3Template s3Template;
 
 	@BeforeAll
 	static void beforeAll() {
-		// region and credentials are irrelevant for test, but must be added to make
-		// test work on environments without AWS cli configured
-		StaticCredentialsProvider credentialsProvider = StaticCredentialsProvider
-				.create(AwsBasicCredentials.create(localstack.getAccessKey(), localstack.getSecretKey()));
-		client = S3Client.builder().region(Region.of(localstack.getRegion())).credentialsProvider(credentialsProvider)
-				.endpointOverride(localstack.getEndpoint()).build();
-		presigner = S3Presigner.builder().region(Region.of(localstack.getRegion()))
-				.credentialsProvider(credentialsProvider).endpointOverride(localstack.getEndpoint()).build();
+		client = LocalstackContainerTest.s3Client();
+		presigner = S3Presigner.builder().region(Region.of(LocalstackContainerTest.LOCAL_STACK_CONTAINER.getRegion()))
+				.credentialsProvider(LocalstackContainerTest.credentialsProvider())
+				.endpointOverride(LocalstackContainerTest.LOCAL_STACK_CONTAINER.getEndpoint()).build();
 	}
 
 	@BeforeEach
@@ -186,6 +178,22 @@ class S3TemplateIntegrationTests {
 	}
 
 	@Test
+	void listAllObjects() throws IOException {
+		client.putObject(r -> r.bucket(BUCKET_NAME).key("hello-en.txt"), RequestBody.fromString("hello"));
+		client.putObject(r -> r.bucket(BUCKET_NAME).key("hello-fr.txt"), RequestBody.fromString("bonjour"));
+		client.putObject(r -> r.bucket(BUCKET_NAME).key("bye.txt"), RequestBody.fromString("bye"));
+
+		List<S3Resource> resources = s3Template.listAllObjects(BUCKET_NAME);
+		assertThat(resources.size()).isEqualTo(3);
+
+		// According to the S3Client doc : "Objects are returned sorted in an ascending order of the respective key
+		// names in the list."
+		assertThat(resources).extracting(S3Resource::getInputStream)
+				.map(is -> new String(is.readAllBytes(), StandardCharsets.UTF_8))
+				.containsExactly("bye", "hello", "bonjour");
+	}
+
+	@Test
 	void listObjects() throws IOException {
 		client.putObject(r -> r.bucket(BUCKET_NAME).key("hello-en.txt"), RequestBody.fromString("hello"));
 		client.putObject(r -> r.bucket(BUCKET_NAME).key("hello-fr.txt"), RequestBody.fromString("bonjour"));
@@ -268,7 +276,12 @@ class S3TemplateIntegrationTests {
 
 	@Test
 	void createsWorkingSignedPutURL() throws IOException {
-		ObjectMetadata metadata = ObjectMetadata.builder().metadata("testkey", "testvalue").build();
+		String fileContent = RandomString.make();
+		long contentLength = fileContent.length();
+		String contentMD5 = calculateContentMD5(fileContent);
+
+		ObjectMetadata metadata = ObjectMetadata.builder().metadata("testkey", "testvalue").contentLength(contentLength)
+				.contentMD5(contentMD5).build();
 		URL signedPutUrl = s3Template.createSignedPutURL(BUCKET_NAME, "file.txt", Duration.ofMinutes(1), metadata,
 				"text/plain");
 
@@ -276,7 +289,8 @@ class S3TemplateIntegrationTests {
 		HttpPut httpPut = new HttpPut(signedPutUrl.toString());
 		httpPut.setHeader("x-amz-meta-testkey", "testvalue");
 		httpPut.setHeader("Content-Type", "text/plain");
-		HttpEntity body = new StringEntity("hello");
+		httpPut.setHeader("Content-MD5", contentMD5);
+		HttpEntity body = new StringEntity(fileContent);
 		httpPut.setEntity(body);
 
 		HttpResponse response = httpClient.execute(httpPut);
@@ -285,9 +299,34 @@ class S3TemplateIntegrationTests {
 		HeadObjectResponse headObjectResponse = client
 				.headObject(HeadObjectRequest.builder().bucket(BUCKET_NAME).key("file.txt").build());
 
-		assertThat(headObjectResponse.contentLength()).isEqualTo(5);
+		assertThat(response.getStatusLine().getStatusCode()).isEqualTo(HttpStatusCode.OK);
+		assertThat(headObjectResponse.contentLength()).isEqualTo(contentLength);
 		assertThat(headObjectResponse.metadata().containsKey("testkey")).isTrue();
 		assertThat(headObjectResponse.metadata().get("testkey")).isEqualTo("testvalue");
+	}
+
+	@Test
+	void signedPutURLFailsForNonMatchingSignature() throws IOException {
+		String fileContent = RandomString.make();
+		long contentLength = fileContent.length();
+		String contentMD5 = calculateContentMD5(fileContent);
+		String maliciousContent = RandomString.make();
+
+		ObjectMetadata metadata = ObjectMetadata.builder().contentLength(contentLength).contentMD5(contentMD5).build();
+		URL signedPutUrl = s3Template.createSignedPutURL(BUCKET_NAME, "file.txt", Duration.ofMinutes(1), metadata,
+				"text/plain");
+
+		CloseableHttpClient httpClient = HttpClients.createDefault();
+		HttpPut httpPut = new HttpPut(signedPutUrl.toString());
+		httpPut.setHeader("Content-Type", "text/plain");
+		httpPut.setHeader("Content-MD5", contentMD5);
+		HttpEntity body = new StringEntity(fileContent + maliciousContent);
+		httpPut.setEntity(body);
+
+		HttpResponse response = httpClient.execute(httpPut);
+		httpClient.close();
+
+		assertThat(response.getStatusLine().getStatusCode()).isEqualTo(HttpStatusCode.FORBIDDEN);
 	}
 
 	private void bucketDoesNotExist(ListBucketsResponse r, String bucketName) {
@@ -298,8 +337,22 @@ class S3TemplateIntegrationTests {
 		assertThat(r.buckets().stream().filter(b -> b.name().equals(bucketName)).findAny()).isPresent();
 	}
 
+	private String calculateContentMD5(String content) {
+		try {
+			MessageDigest md = MessageDigest.getInstance("MD5");
+			byte[] contentBytes = content.getBytes(StandardCharsets.UTF_8);
+			byte[] mdBytes = md.digest(contentBytes);
+			return Base64.getEncoder().encodeToString(mdBytes);
+		}
+		catch (Exception exception) {
+			throw new RuntimeException("Failed to calculate Content-MD5", exception);
+		}
+	}
+
 	static class Person {
+
 		private String firstName;
+
 		private String lastName;
 
 		public Person() {
@@ -325,6 +378,7 @@ class S3TemplateIntegrationTests {
 		public void setFirstName(String firstName) {
 			this.firstName = firstName;
 		}
+
 	}
 
 }
